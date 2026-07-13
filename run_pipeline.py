@@ -11,19 +11,48 @@ Usage:
   python run_pipeline.py --auto   # all input files, default Ocean/Air tabs
 
 Google Colab:
+  from google.colab import drive
+  drive.mount('/content/drive')
+
   import os
   exec(open('/content/SLB-Global-Runners/run_pipeline.py').read())
 
-  Data folders on Drive (input / processing / output) are picked up
-  automatically when the shared-drive path is mounted.
+  Ensure the repo lives at /content/SLB-Global-Runners (or set SLB_CODE_DIR).
+  Data folders on Drive (input / processing / output) are picked up automatically.
 """
 
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from dataclasses import dataclass
 from pathlib import Path
+
+COLAB_CODE_DIR = Path("/content/SLB-Global-Runners")
+
+
+def _ensure_code_on_path() -> None:
+    """Make package imports work when run_pipeline.py is exec()'d in Colab."""
+    env_code_dir = os.environ.get("SLB_CODE_DIR")
+    candidates: list[Path] = []
+    if env_code_dir:
+        candidates.append(Path(env_code_dir))
+    candidates.append(COLAB_CODE_DIR)
+    script_file = globals().get("__file__")
+    if script_file:
+        candidates.append(Path(script_file).resolve().parent)
+
+    for candidate in candidates:
+        if (candidate / "project_paths.py").is_file():
+            code_dir = str(candidate.resolve())
+            if code_dir not in sys.path:
+                sys.path.insert(0, code_dir)
+            os.chdir(code_dir)
+            return
+
+
+_ensure_code_on_path()
 
 from project_paths import bootstrap_colab_runtime, is_colab_environment, print_path_config
 
