@@ -128,6 +128,18 @@ def run_pipeline(
     )
 
 
+def _running_in_notebook() -> bool:
+    if is_colab_environment():
+        return True
+    if not sys.argv:
+        return False
+    argv0 = Path(sys.argv[0]).name.lower()
+    return any(
+        marker in argv0
+        for marker in ("ipykernel_launcher", "colab_kernel_launcher", "jupyter")
+    )
+
+
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run the Global Runners end-to-end pipeline.")
     parser.add_argument(
@@ -145,11 +157,12 @@ def _parse_args() -> argparse.Namespace:
 
 
 def main() -> int:
-    if is_colab_environment() and "--auto" not in sys.argv:
-        sys.argv.append("--auto")
-
-    args = _parse_args()
     try:
+        if _running_in_notebook():
+            run_pipeline(auto=True)
+            return 0
+
+        args = _parse_args()
         run_pipeline(auto=args.auto, output_path=args.output)
         return 0
     except KeyboardInterrupt:
@@ -161,4 +174,6 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    exit_code = main()
+    if not _running_in_notebook():
+        raise SystemExit(exit_code)
