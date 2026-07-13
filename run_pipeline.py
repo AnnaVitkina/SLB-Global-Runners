@@ -17,6 +17,10 @@ Google Colab:
   import os
   exec(open('/content/SLB-Global-Runners/run_pipeline.py').read())
 
+  By default you will be prompted to choose input files and tabs.
+  For auto mode (all files, Ocean/Air tabs): set os.environ['SLB_AUTO'] = '1' before exec,
+  or run: sys.argv.append('--auto') before exec.
+
   Ensure the repo lives at /content/SLB-Global-Runners (or set SLB_CODE_DIR).
   Data folders on Drive (input / processing / output) are picked up automatically.
 """
@@ -140,6 +144,26 @@ def _running_in_notebook() -> bool:
     )
 
 
+def _parse_args_for_notebook() -> argparse.Namespace:
+    """Parse pipeline flags in Jupyter/Colab; ignore kernel args like -f kernel.json."""
+    parser = argparse.ArgumentParser(description="Run the Global Runners end-to-end pipeline.")
+    parser.add_argument(
+        "--auto",
+        action="store_true",
+        help="Use all input files and default Ocean/Air tabs without prompts.",
+    )
+    parser.add_argument(
+        "--output",
+        type=Path,
+        default=None,
+        help="Optional output workbook path (defaults to output/<rate card>_output.xlsx).",
+    )
+    args, _ = parser.parse_known_args()
+    if os.environ.get("SLB_AUTO") == "1":
+        args.auto = True
+    return args
+
+
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run the Global Runners end-to-end pipeline.")
     parser.add_argument(
@@ -159,7 +183,8 @@ def _parse_args() -> argparse.Namespace:
 def main() -> int:
     try:
         if _running_in_notebook():
-            run_pipeline(auto=True)
+            args = _parse_args_for_notebook()
+            run_pipeline(auto=args.auto, output_path=args.output)
             return 0
 
         args = _parse_args()
