@@ -30,6 +30,7 @@ def _ensure_code_on_path() -> None:
 
 _ensure_code_on_path()
 
+from processing_sheet_roles import resolve_processing_sheets
 from rate_layout_common import latest_processing_file
 
 from run_pipeline import build_all_output_tabs
@@ -37,7 +38,9 @@ from run_pipeline import build_all_output_tabs
 
 def main() -> int:
     try:
-        build_all_output_tabs(latest_processing_file())
+        processing_path = latest_processing_file()
+        processing_path = resolve_processing_sheets(processing_path, interactive=True)
+        build_all_output_tabs(processing_path)
         return 0
     except KeyboardInterrupt:
         print("\nOperation cancelled.")
