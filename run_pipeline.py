@@ -68,7 +68,8 @@ from build_road_precarriage_air import build_road_precarriage_air
 from build_road_precarriage_sea import build_road_precarriage_sea
 from build_sea_rates import build_sea_rates
 from process_tabs import run_combine_tabs
-from rate_layout_common import output_workbook_path
+from processing_sheet_roles import processing_has_sheet, resolve_processing_sheets
+from rate_layout_common import AIR_SOURCE_SHEET, OCEAN_SOURCE_SHEET, output_workbook_path
 
 OUTPUT_TAB_NAMES = (
     "Sea Rates",
@@ -93,11 +94,25 @@ def build_all_output_tabs(
     output_path: Path | None = None,
 ) -> Path:
     path = output_path or output_workbook_path()
+    has_ocean = processing_has_sheet(processing_path, OCEAN_SOURCE_SHEET)
+    has_air = processing_has_sheet(processing_path, AIR_SOURCE_SHEET)
 
-    build_sea_rates(processing_path=processing_path, output_path=path)
-    build_road_precarriage_sea(processing_path=processing_path, output_path=path)
-    build_air_rates(processing_path=processing_path, output_path=path)
-    build_road_precarriage_air(processing_path=processing_path, output_path=path)
+    if has_ocean:
+        build_sea_rates(processing_path=processing_path, output_path=path)
+        build_road_precarriage_sea(processing_path=processing_path, output_path=path)
+    else:
+        print("Skipping Sea output tabs (no Ocean sheet in processing workbook).")
+
+    if has_air:
+        build_air_rates(processing_path=processing_path, output_path=path)
+        build_road_precarriage_air(processing_path=processing_path, output_path=path)
+    else:
+        print("Skipping Air output tabs (no Air sheet in processing workbook).")
+
+    if not has_ocean and not has_air:
+        raise RuntimeError(
+            "No Ocean or Air data available. Map at least one processing sheet to Ocean or Air."
+        )
 
     print("\n=== Applying conditions and building Conditions tab ===")
     finalize_output_workbook(path)
@@ -114,6 +129,12 @@ def run_pipeline(
     print_path_config()
     print("=== Step 1/2: Select and combine input tabs ===")
     processing_path = run_combine_tabs(auto=auto)
+
+    print("\n=== Map processing sheets to Ocean / Air ===")
+    processing_path = resolve_processing_sheets(
+        processing_path,
+        interactive=True,
+    )
 
     print("\n=== Step 2/2: Build output rate tabs ===")
     saved_output_path = build_all_output_tabs(processing_path, output_path=output_path)
