@@ -40,6 +40,20 @@ class SheetSelection:
         return f"{self.file_path.name} -> {self.sheet_name}"
 
 
+@dataclass(frozen=True)
+class CombineResult:
+    path: Path
+    rate_card_name: str
+
+
+def rate_card_name_from_selections(selections: list[SheetSelection]) -> str:
+    """Use the selected source workbook name(s); not every file in input/."""
+    stems = list(dict.fromkeys(selection.file_path.stem for selection in selections))
+    if not stems:
+        raise ValueError("No source files in sheet selections.")
+    return stems[0]
+
+
 def ensure_directories() -> None:
     ensure_workspace_dirs()
 
@@ -418,9 +432,14 @@ def collect_selected_frames(
     return frames
 
 
-def save_combined_workbook(frames: list[tuple[str, pd.DataFrame]]) -> Path:
+def save_combined_workbook(
+    frames: list[tuple[str, pd.DataFrame]],
+    *,
+    rate_card_name: str,
+) -> Path:
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    output_path = PROCESSING_DIR / f"combined_{timestamp}.xlsx"
+    safe_name = re.sub(r'[\\/*?:\[\]]+', "_", rate_card_name).strip()
+    output_path = PROCESSING_DIR / f"combined_{safe_name}_{timestamp}.xlsx"
 
     with pd.ExcelWriter(output_path, engine="openpyxl") as writer:
         for sheet_name, df in frames:
@@ -430,7 +449,7 @@ def save_combined_workbook(frames: list[tuple[str, pd.DataFrame]]) -> Path:
     return output_path
 
 
-def run_combine_tabs(*, auto: bool = False) -> Path:
+def run_combine_tabs(*, auto: bool = False) -> CombineResult:
     """Combine selected input tabs into one processing workbook."""
     ensure_directories()
     files = list_input_files()
@@ -447,14 +466,15 @@ def run_combine_tabs(*, auto: bool = False) -> Path:
     if not selections:
         raise RuntimeError("Nothing to save. No sheets were selected.")
 
+    rate_card_name = rate_card_name_from_selections(selections)
     frames = collect_selected_frames(selections)
 
     if not frames:
         raise RuntimeError("Nothing to save. No sheets could be loaded.")
 
-    output_path = save_combined_workbook(frames)
+    output_path = save_combined_workbook(frames, rate_card_name=rate_card_name)
     print(f"\nSaved {len(frames)} sheet(s) to: {output_path}")
-    return output_path
+    return CombineResult(path=output_path, rate_card_name=rate_card_name)
 
 
 def main() -> int:
