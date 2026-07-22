@@ -430,11 +430,34 @@ def list_input_files() -> list[Path]:
     ]
 
 
-def get_rate_card_name() -> str:
+def get_rate_card_name(rate_card_name: str | None = None) -> str:
+    if rate_card_name:
+        return rate_card_name
     files = list_input_files()
     if not files:
         raise FileNotFoundError(f"No Excel files found in: {INPUT_DIR}")
     return files[0].stem
+
+
+def rate_card_name_from_processing_path(processing_path: Path) -> str | None:
+    """Read source rate card name from combined_<name>_<timestamp>.xlsx."""
+    import re
+
+    stem = processing_path.stem
+    if not stem.startswith("combined_"):
+        return None
+    rest = stem[len("combined_") :]
+    match = re.match(r"^(.+)_\d{8}_\d{6}$", rest)
+    if not match:
+        return None
+    return match.group(1)
+
+
+def output_workbook_path(rate_card_name: str | None = None) -> Path:
+    import re
+
+    rc_name = re.sub(r'[\\/*?:\[\]]+', "_", get_rate_card_name(rate_card_name)).strip()
+    return OUTPUT_DIR / f"{rc_name}_output.xlsx"
 
 
 def latest_processing_file() -> Path:
@@ -468,13 +491,6 @@ def load_air_dataframe(processing_path: Path | None = None) -> pd.DataFrame:
     if sheet_name is None:
         raise ValueError(f"Sheet '{AIR_SOURCE_SHEET}' not found in {path.name}")
     return pd.read_excel(path, sheet_name=sheet_name)
-
-
-def output_workbook_path() -> Path:
-    import re
-
-    rc_name = re.sub(r'[\\/*?:\[\]]+', "_", get_rate_card_name()).strip()
-    return OUTPUT_DIR / f"{rc_name}_output.xlsx"
 
 
 def block_width(block: CostBlock) -> int:
