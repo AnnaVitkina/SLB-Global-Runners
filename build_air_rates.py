@@ -273,11 +273,12 @@ def _filter_air_by_service_type(air_df: pd.DataFrame, service_type: str) -> pd.D
 def build_air_rates(
     processing_path: Path | None = None,
     output_path: Path | None = None,
+    rc_name: str | None = None,
 ) -> Path:
     air_df = load_air_dataframe(processing_path)
-    rc_name = get_rate_card_name()
+    rate_card_name = get_rate_card_name(rc_name)
     cost_blocks = build_air_cost_blocks()
-    path = output_path or output_workbook_path()
+    path = output_path or output_workbook_path(rate_card_name)
 
     tab_specs = (
         (AIR_MAWB_SHEET, "MAWB", "direct"),
@@ -288,7 +289,7 @@ def build_air_rates(
         filtered_air_df = _filter_air_by_service_type(air_df, service_type)
         shipment_df = build_air_shipment_df(
             filtered_air_df,
-            rc_name=rc_name,
+            rc_name=rate_card_name,
             type_value=type_value,
         )
         shipment_df = apply_grouped_second_column_fill(
