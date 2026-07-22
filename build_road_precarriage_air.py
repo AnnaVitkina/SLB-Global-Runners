@@ -28,10 +28,11 @@ ROAD_PRE_CARRIAGE_AIR_HAWB_SHEET = "Road pre-carriage for Air HAWB"
 def build_road_precarriage_air(
     processing_path: Path | None = None,
     output_path: Path | None = None,
+    rc_name: str | None = None,
 ) -> Path:
     air_df = load_air_dataframe(processing_path)
-    rc_name = get_rate_card_name()
-    path = output_path or output_workbook_path()
+    rate_card_name = get_rate_card_name(rc_name)
+    path = output_path or output_workbook_path(rate_card_name)
 
     tab_specs = (
         (ROAD_PRE_CARRIAGE_AIR_MAWB_SHEET, "MAWB"),
@@ -40,7 +41,10 @@ def build_road_precarriage_air(
 
     for sheet_name, service_type in tab_specs:
         filtered_air_df = _filter_air_by_service_type(air_df, service_type)
-        shipment_df = build_road_precarriage_shipment_from_air(filtered_air_df, rc_name=rc_name)
+        shipment_df = build_road_precarriage_shipment_from_air(
+            filtered_air_df,
+            rc_name=rate_card_name,
+        )
         cost_source_df = prepare_air_for_precarriage_costs(filtered_air_df)
         cost_blocks = build_road_precarriage_cost_blocks(cost_source_df, for_air=True)
 
