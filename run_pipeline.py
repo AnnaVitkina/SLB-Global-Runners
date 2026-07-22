@@ -92,20 +92,35 @@ class PipelineResult:
 def build_all_output_tabs(
     processing_path: Path,
     output_path: Path | None = None,
+    *,
+    rate_card_name: str | None = None,
 ) -> Path:
-    path = output_path or output_workbook_path()
+    path = output_path or output_workbook_path(rate_card_name)
+
     has_ocean = processing_has_sheet(processing_path, OCEAN_SOURCE_SHEET)
     has_air = processing_has_sheet(processing_path, AIR_SOURCE_SHEET)
 
     if has_ocean:
-        build_sea_rates(processing_path=processing_path, output_path=path)
+        build_sea_rates(
+            processing_path=processing_path,
+            output_path=path,
+            rc_name=rate_card_name,
+        )
         build_road_precarriage_sea(processing_path=processing_path, output_path=path)
     else:
         print("Skipping Sea output tabs (no Ocean sheet in processing workbook).")
 
     if has_air:
-        build_air_rates(processing_path=processing_path, output_path=path)
-        build_road_precarriage_air(processing_path=processing_path, output_path=path)
+        build_air_rates(
+            processing_path=processing_path,
+            output_path=path,
+            rc_name=rate_card_name,
+        )
+        build_road_precarriage_air(
+            processing_path=processing_path,
+            output_path=path,
+            rc_name=rate_card_name,
+        )
     else:
         print("Skipping Air output tabs (no Air sheet in processing workbook).")
 
@@ -128,16 +143,20 @@ def run_pipeline(
 ) -> PipelineResult:
     print_path_config()
     print("=== Step 1/2: Select and combine input tabs ===")
-    processing_path = run_combine_tabs(auto=auto)
+    combine = run_combine_tabs(auto=auto)
 
     print("\n=== Map processing sheets to Ocean / Air ===")
     processing_path = resolve_processing_sheets(
-        processing_path,
+        combine.path,
         interactive=True,
     )
 
     print("\n=== Step 2/2: Build output rate tabs ===")
-    saved_output_path = build_all_output_tabs(processing_path, output_path=output_path)
+    saved_output_path = build_all_output_tabs(
+        processing_path,
+        output_path=output_path,
+        rate_card_name=combine.rate_card_name,
+    )
 
     print("\n=== Pipeline complete ===")
     print(f"  Processing workbook: {processing_path}")
