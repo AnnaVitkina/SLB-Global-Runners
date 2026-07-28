@@ -9,7 +9,12 @@ from openpyxl import load_workbook
 from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
 
-from rate_layout_common import COLUMN_HEADER_ROW, DATA_START_ROW
+from supplier_name_lookup import (
+    coerce_dsv_display_name,
+    is_dsv_carrier_name,
+    is_dsv_supplier_text,
+)
+from rate_layout_common import COLUMN_HEADER_ROW, DATA_START_ROW, cell_text
 
 CONDITIONS_SHEET = "Conditions"
 
@@ -114,6 +119,37 @@ def normalize_condition_value(value: object) -> object:
     return "; ".join(unique)
 
 
+def normalize_transport_supplier_name(
+    value: object,
+    origin_country: object,
+    destination_country: object,
+) -> object:
+    if value is None:
+        return value
+
+    text = cell_text(value)
+    if not text:
+        return value
+
+    if (
+        is_dsv_carrier_name(text)
+        or is_dsv_supplier_text(text)
+        or cell_text(text).upper() == "DSV"
+        or is_dsv_carrier_name(cell_text(normalize_condition_value(text)))
+    ):
+        return coerce_dsv_display_name(text, origin_country, destination_country)
+
+    return normalize_condition_value(text)
+
+
+def normalize_air_supplier_name(
+    value: object,
+    origin_country: object,
+    destination_country: object,
+) -> object:
+    return normalize_transport_supplier_name(value, origin_country, destination_country)
+
+
 def build_conditions_dataframe() -> pd.DataFrame:
     rows: list[dict[str, str]] = []
     for target in CONDITION_TARGETS:
@@ -174,10 +210,49 @@ def _apply_conditions_to_sheet(worksheet, target: ConditionTarget) -> int:
     if column_idx is None:
         return 0
 
+    air_tabs = {"Air MAWB rate", "Air HAWB rate"}
+    road_air_tabs = {"Road pre-carriage for Air MAWB", "Road pre-carriage for Air HAWB"}
+    road_sea_tab = "Road pre-carriage for Sea"
+
+    road_carrier_target = target.column_name == CARRIER_NAME_COLUMN and (
+        target.tab_name in road_air_tabs or target.tab_name == road_sea_tab
+    )
+
+    origin_col = None
+    destination_col = None
+    if target.tab_name in air_tabs and target.column_name == SUPPLIER_NAME_COLUMN:
+        origin_col = _find_header_column(worksheet, "Origin country code")
+        destination_col = _find_header_column(worksheet, "Destination country code")
+    elif road_carrier_target:
+        origin_col = _find_header_column(worksheet, "Origin Country")
+    elif target.tab_name == "Sea Rates" and target.column_name == SUPPLIER_NAME_COLUMN:
+        origin_col = _find_header_column(worksheet, "Origin Country Code")
+        destination_col = _find_header_column(worksheet, "Destination country code")
+
     replacements = 0
     for row_idx in range(DATA_START_ROW, worksheet.max_row + 1):
         cell = worksheet.cell(row=row_idx, column=column_idx)
-        normalized = normalize_condition_value(cell.value)
+        if road_carrier_target and origin_col is not None:
+            origin_value = worksheet.cell(row=row_idx, column=origin_col).value
+            if is_dsv_carrier_name(cell.value):
+                normalized = cell.value
+            elif cell_text(cell.value).upper() == "DSV" or is_dsv_supplier_text(cell.value):
+                normalized = coerce_dsv_display_name(cell.value, origin_value, None)
+            else:
+                normalized = normalize_condition_value(cell.value)
+        elif origin_col is not None:
+            destination_value = None
+            if destination_col is not None:
+                destination_value = worksheet.cell(row=row_idx, column=destination_col).value
+            normalized = normalize_transport_supplier_name(
+                cell.value,
+                worksheet.cell(row=row_idx, column=origin_col).value,
+                destination_value,
+            )
+        else:
+            normalized = normalize_condition_value(cell.value)
+            if is_dsv_carrier_name(normalized) or cell_text(normalized).upper() == "DSV":
+                normalized = coerce_dsv_display_name(normalized, None, None)
         if normalized != cell.value:
             cell.value = normalized
             _style_condition_applied_cell(cell)
