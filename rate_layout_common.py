@@ -12,7 +12,7 @@ from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.worksheet import Worksheet
 
 from project_paths import INPUT_DIR, OUTPUT_DIR, PROCESSING_DIR, ensure_workspace_dirs
-from supplier_name_lookup import map_fred_supplier_names
+from supplier_name_lookup import coerce_dsv_display_name, map_fred_supplier_names
 
 OCEAN_SOURCE_SHEET = "Ocean"
 AIR_SOURCE_SHEET = "Air"
@@ -114,6 +114,7 @@ AIR_TO_OCEAN_SERVICE_TYPE = {
 class CostValueColumn:
     header: str
     source_column: str | None = None
+    percent_over_costs: bool = False
 
 
 @dataclass(frozen=True)
@@ -161,13 +162,44 @@ def rate_value(value: object) -> float | None:
         return None
 
 
-def format_cell_value(value: object) -> object:
+def round_numeric_output(value: object) -> float | None:
     number = rate_value(value)
     if number is None:
         return None
-    if float(number).is_integer():
-        return int(number)
-    return number
+    return round(float(number), 2)
+
+
+def format_cell_value(value: object) -> object:
+    rounded = round_numeric_output(value)
+    if rounded is None:
+        return None
+    return rounded
+
+
+def format_shipment_cell_value(value: object) -> object:
+    if value == "" or pd.isna(value):
+        return None
+    rounded = round_numeric_output(value)
+    if rounded is not None:
+        return rounded
+    return value
+
+
+def apply_two_decimal_number_format(cell) -> None:
+    if isinstance(cell.value, (int, float)) and not (
+        isinstance(cell.value, float) and pd.isna(cell.value)
+    ):
+        cell.number_format = "0.00"
+
+
+def format_percent_over_costs_value(value: object) -> object:
+    """Source may be 20 (percent) or 0.2 (fraction); output always uses percent (20)."""
+    number = rate_value(value)
+    if number is None:
+        return None
+    if 0 < number < 1:
+        number = number * 100
+    return format_cell_value(number)
 
 
 def apply_grouped_second_column_fill(
@@ -259,7 +291,7 @@ def build_road_precarriage_shipment_from_ocean(ocean_df: pd.DataFrame) -> pd.Dat
             "Origin Country": ocean_df["Origin Country Code"],
             "Port of loading POL": empty,
             "Origin Base city": ocean_df["Origin Base City"],
-            "Destination country": ocean_df["Destination Country Code"],
+            "Destination country": ocean_df["Origin Country Code"],
             "Destination location id": ocean_df["Port of discharge POD (UNLOCODE)"].map(
                 destination_location_id_from_code
             ),
@@ -269,6 +301,7 @@ def build_road_precarriage_shipment_from_ocean(ocean_df: pd.DataFrame) -> pd.Dat
                 ocean_df["Origin Country Code"],
                 ocean_df["Supplier"],
                 transport_mode="ocean",
+                destination_countries=ocean_df["Destination Country Code"],
             ),
             "Supplier Code": ocean_df["Supplier"],
             "Valid From": ocean_df["Valid from"].map(format_date),
@@ -293,13 +326,26 @@ def build_road_precarriage_shipment_from_air(
             "Lane UID": air_df["Lane UID"],
             "Origin Country": air_df["Origin Country Code"],
             "Origin Base City": air_df["Origin Base City"],
-            "Destination Country": air_df["Destination Country Code"],
+            "Destination Country": air_df["Origin Country Code"],
             "Service": service,
-            "Supplier Name (Q)": air_df["Supplier Name (Q)"],
+            "Supplier Name (Q)": pd.Series(
+                [
+                    coerce_dsv_display_name(value, origin, destination)
+                    for value, origin, destination in zip(
+                        air_df["Supplier Name (Q)"],
+                        air_df["Origin Country Code"],
+                        air_df["Destination Country Code"],
+                        strict=False,
+                    )
+                ],
+                index=air_df.index,
+                dtype="object",
+            ),
             "Carrier Name": map_fred_supplier_names(
                 air_df["Origin Country Code"],
                 air_df["Supplier Name (Q)"],
                 transport_mode="air",
+                destination_countries=air_df["Destination Country Code"],
             ),
             "Destination Airport Code": air_df["Destination Airport Code"].map(cell_text),
             "Destination City (for DSV US only)": empty,
@@ -412,7 +458,13 @@ def build_road_precarriage_cost_blocks(
             title="Local pre-carriage DGR surcharge",
             apply_if="",
             rate_by="Rate by: % over costs",
-            value_columns=(CostValueColumn("% over costs", DG_SURCHARGE_COL),),
+            value_columns=(
+                CostValueColumn(
+                    "% over costs",
+                    DG_SURCHARGE_COL,
+                    percent_over_costs=True,
+                ),
+            ),
             include_currency=False,
         )
     )
@@ -637,7 +689,50 @@ def write_rate_value_cell(ws: Worksheet, row: int, column: int, value: object) -
     if value is None:
         return
     cell = ws.cell(row=row, column=column, value=value)
-    cell.number_format = "0.00##"
+    cell.number_format = "0.00"
+
+
+def _normalize_row_cell_for_signature(value: object) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, float) and pd.isna(value):
+        return ""
+    if isinstance(value, bool):
+        return "1" if value else "0"
+    if isinstance(value, (int, float)):
+        number = float(value)
+        if pd.isna(number):
+            return ""
+        return f"{round(number, 2):.2f}"
+    return str(value).strip()
+
+
+def highlight_fully_duplicate_lane_rows(ws: Worksheet, *, last_data_column: int) -> int:
+    """Blue-fill rows where shipment + cost columns are identical to another row."""
+    if last_data_column < 1 or ws.max_row < DATA_START_ROW:
+        return 0
+
+    from collections import defaultdict
+
+    rows_by_signature: dict[str, list[int]] = defaultdict(list)
+    for row_idx in range(DATA_START_ROW, ws.max_row + 1):
+        signature = "\x1f".join(
+            _normalize_row_cell_for_signature(ws.cell(row=row_idx, column=col_idx).value)
+            for col_idx in range(1, last_data_column + 1)
+        )
+        if not signature.replace("\x1f", ""):
+            continue
+        rows_by_signature[signature].append(row_idx)
+
+    highlighted_rows = 0
+    for row_indices in rows_by_signature.values():
+        if len(row_indices) < 2:
+            continue
+        for row_idx in row_indices:
+            for col_idx in range(1, last_data_column + 1):
+                ws.cell(row=row_idx, column=col_idx).fill = BLUE_FILL
+            highlighted_rows += 1
+    return highlighted_rows
 
 
 def write_matrix_sheet(
@@ -648,6 +743,7 @@ def write_matrix_sheet(
     cost_blocks: list[CostBlock],
     *,
     highlight_min_gt_max: bool = False,
+    highlight_duplicate_lanes: bool = True,
     transport_mode: str | None = None,
     bold_shipment_columns: frozenset[str] | None = None,
 ) -> None:
@@ -670,11 +766,12 @@ def write_matrix_sheet(
 
         for col_idx, header in enumerate(shipment_columns, start=1):
             value = shipment_row[header]
-            ws.cell(
+            cell = ws.cell(
                 row=excel_row,
                 column=col_idx,
-                value=None if value == "" or pd.isna(value) else value,
+                value=format_shipment_cell_value(value),
             )
+            apply_two_decimal_number_format(cell)
 
         cost_col = shipment_count + 1
         for block in cost_blocks:
@@ -728,14 +825,23 @@ def write_matrix_sheet(
                         source_column = value_column.source_column
                         if source_column is None:
                             continue
+                        raw_value = ocean_row.get(source_column)
+                        if value_column.percent_over_costs:
+                            formatted = format_percent_over_costs_value(raw_value)
+                        else:
+                            formatted = format_cell_value(raw_value)
                         write_rate_value_cell(
                             ws,
                             excel_row,
                             cost_col + offset,
-                            format_cell_value(ocean_row.get(source_column)),
+                            formatted,
                         )
 
             cost_col += block_width(block)
+
+    last_data_column = cost_col - 1
+    if highlight_duplicate_lanes and last_data_column >= 1:
+        highlight_fully_duplicate_lane_rows(ws, last_data_column=last_data_column)
 
     for col_idx in range(1, cost_col):
         ws.column_dimensions[get_column_letter(col_idx)].width = 18
