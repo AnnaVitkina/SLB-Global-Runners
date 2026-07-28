@@ -20,7 +20,7 @@ from rate_layout_common import (
     save_output_sheet,
     write_matrix_sheet,
 )
-from supplier_name_lookup import map_fred_supplier_names
+from supplier_name_lookup import coerce_dsv_display_name, map_fred_supplier_names
 
 AIR_MAWB_SHEET = "Air MAWB rate"
 AIR_HAWB_SHEET = "Air HAWB rate"
@@ -70,7 +70,6 @@ AIR_BOLD_SHIPMENT_COLUMNS = frozenset(
         "Origin base city",
         "Destination country code",
         "Destination airport code",
-        "Destination base city (second)",
         "Supplier name",
         "Type",
         "Valid from",
@@ -78,14 +77,22 @@ AIR_BOLD_SHIPMENT_COLUMNS = frozenset(
     }
 )
 
-AIR_DEST_BASE_CITY_GROUP_COLUMNS = (
-    "Origin country code",
-    "Origin base city",
-    "Destination country code",
-    "Destination airport code",
-    "Supplier name",
-    "Type",
+AIR_DEST_BASE_CITY_GROUP_COLUMNS = tuple(
+    column
+    for column in AIR_SHIPMENT_COLUMNS
+    if column not in ("Destination base city", "Destination base city (second)")
 )
+
+
+def trim_air_lane_uid(lane_uid: object) -> str:
+    text = cell_text(lane_uid)
+    if not text:
+        return ""
+    upper = text.upper()
+    for suffix in ("MAWB", "HAWB"):
+        if upper.endswith(suffix):
+            return text[: -len(suffix)]
+    return text
 
 
 def build_air_shipment_df(
@@ -102,7 +109,7 @@ def build_air_shipment_df(
             "Rate Card": rc_name,
             "Scope of work": air_df["Scope of Work"],
             "Service type": air_df["Service Type"],
-            "Lane UID": air_df["Lane UID"],
+            "Lane UID": air_df["Lane UID"].map(trim_air_lane_uid),
             "Origin country code": air_df["Origin Country Code"],
             "Origin base city": air_df["Origin Base City"],
             "Departure airport city": air_df["Departure Airport City"],
@@ -112,11 +119,28 @@ def build_air_shipment_df(
             "Destination airport code": air_df["Destination Airport Code"],
             "Destination base city": air_df["Destination Base City"],
             "Destination base city (second)": empty,
-            "Supplier name (Q)": air_df["Supplier Name (Q)"],
+            "Supplier name (Q)": pd.Series(
+                [
+                    coerce_dsv_display_name(
+                        value,
+                        origin,
+                        destination,
+                    )
+                    for value, origin, destination in zip(
+                        air_df["Supplier Name (Q)"],
+                        air_df["Origin Country Code"],
+                        air_df["Destination Country Code"],
+                        strict=False,
+                    )
+                ],
+                index=air_df.index,
+                dtype="object",
+            ),
             "Supplier name": map_fred_supplier_names(
                 air_df["Origin Country Code"],
                 air_df["Supplier Name (Q)"],
                 transport_mode="air",
+                destination_countries=air_df["Destination Country Code"],
             ),
             "Type": type_series,
             "Valid from": air_df["Valid from"].map(format_date),
@@ -126,7 +150,10 @@ def build_air_shipment_df(
     )
 
 
-def build_air_carrier_group_cost_blocks() -> list[CostBlock]:
+def build_air_carrier_group_cost_blocks(
+    *,
+    include_arx_ae_export: bool = True,
+) -> list[CostBlock]:
     blocks: list[CostBlock] = []
 
     export_specs = (
@@ -135,13 +162,11 @@ def build_air_carrier_group_cost_blocks() -> list[CostBlock]:
             EXPORT_CLEARANCE_COL,
             (CARRIER_GROUP_HOU,),
             True,
-            True,
         ),
         (
             "Air Export Clearance (RTM, MEA, SC)",
             EXPORT_CLEARANCE_COL,
             (CARRIER_GROUP_RTM, CARRIER_GROUP_MEA, CARRIER_GROUP_SC),
-            True,
             True,
         ),
         (
@@ -153,7 +178,7 @@ def build_air_carrier_group_cost_blocks() -> list[CostBlock]:
             EXPORT_CLEARANCE_COL,
         ),
     )
-    for title, source_column, carrier_groups, exclude_arx, exclude_dzs_aei in export_specs[:2]:
+    for title, source_column, carrier_groups, exclude_dzs_aei in export_specs[:2]:
         if carrier_groups == (CARRIER_GROUP_HOU,):
             apply_if = "Apply if: Carrier group in {'HOU', 'MX'}"
         else:
@@ -165,20 +190,20 @@ def build_air_carrier_group_cost_blocks() -> list[CostBlock]:
                 rate_by="Rate by: Per shipment",
                 value_columns=(CostValueColumn("p/unit", source_column),),
                 match_carrier_groups=carrier_groups,
-                exclude_arx_carrier_lane=exclude_arx,
                 exclude_dzs_aei_carrier_lane=exclude_dzs_aei,
             )
         )
 
-    blocks.append(
-        CostBlock(
-            title=export_specs[2][0],
-            apply_if="Apply if: Supplier name equals 'ARX'",
-            rate_by="Rate by: Per shipment",
-            value_columns=(CostValueColumn("p/unit", export_specs[2][1]),),
-            match_arx_carrier_lane=True,
+    if include_arx_ae_export:
+        blocks.append(
+            CostBlock(
+                title=export_specs[2][0],
+                apply_if="Apply if: Supplier name equals 'ARX'",
+                rate_by="Rate by: Per shipment",
+                value_columns=(CostValueColumn("p/unit", export_specs[2][1]),),
+                match_arx_carrier_lane=True,
+            )
         )
-    )
     blocks.append(
         CostBlock(
             title=export_specs[3][0],
@@ -230,7 +255,7 @@ def build_air_carrier_group_cost_blocks() -> list[CostBlock]:
     return blocks
 
 
-def build_air_cost_blocks() -> list[CostBlock]:
+def build_air_cost_blocks(*, include_arx_ae_export: bool = True) -> list[CostBlock]:
     freight_columns = tuple(
         CostValueColumn(header, source_column)
         for header, source_column in FREIGHT_AIR_WEIGHT_COLUMNS
@@ -261,7 +286,7 @@ def build_air_cost_blocks() -> list[CostBlock]:
             rate_by="Rate by: Per shipment",
             value_columns=(CostValueColumn("p/unit", DGR_DECLARATION_COL),),
         ),
-        *build_air_carrier_group_cost_blocks(),
+        *build_air_carrier_group_cost_blocks(include_arx_ae_export=include_arx_ae_export),
     ]
 
 
@@ -277,7 +302,6 @@ def build_air_rates(
 ) -> Path:
     air_df = load_air_dataframe(processing_path)
     rate_card_name = get_rate_card_name(rc_name)
-    cost_blocks = build_air_cost_blocks()
     path = output_path or output_workbook_path(rate_card_name)
 
     tab_specs = (
@@ -286,6 +310,7 @@ def build_air_rates(
     )
 
     for sheet_name, service_type, type_value in tab_specs:
+        cost_blocks = build_air_cost_blocks(include_arx_ae_export=service_type == "HAWB")
         filtered_air_df = _filter_air_by_service_type(air_df, service_type)
         shipment_df = build_air_shipment_df(
             filtered_air_df,
