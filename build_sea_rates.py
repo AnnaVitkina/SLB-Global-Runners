@@ -22,7 +22,13 @@ from carrier_groups import (
     is_arx_carrier_supplier_name,
 )
 from project_paths import INPUT_DIR, OUTPUT_DIR, PROCESSING_DIR, ensure_workspace_dirs
-from rate_layout_common import apply_grouped_second_column_fill
+from rate_layout_common import (
+    apply_grouped_second_column_fill,
+    format_cell_value,
+    format_shipment_cell_value,
+    highlight_fully_duplicate_lane_rows,
+    apply_two_decimal_number_format,
+)
 from supplier_name_lookup import lookup_fred_supplier_name, map_fred_supplier_names
 
 SEA_RATES_SHEET = "Sea Rates"
@@ -162,12 +168,7 @@ def _rate_value(value: object) -> float | None:
 
 
 def _format_cell_value(value: object) -> object:
-    number = _rate_value(value)
-    if number is None:
-        return None
-    if float(number).is_integer():
-        return int(number)
-    return number
+    return format_cell_value(value)
 
 
 def _output_equipment_type(equipment_type: str) -> str:
@@ -261,6 +262,7 @@ def build_sea_rates_shipment_df(
                 ocean_df["Origin Country Code"],
                 ocean_df["Supplier"],
                 transport_mode="ocean",
+                destination_countries=ocean_df["Destination Country Code"],
             ),
             "Supplier code": ocean_df["Supplier"],
             "Valid From": ocean_df["Valid from"].map(_format_date),
@@ -550,11 +552,12 @@ def write_sea_rates_sheet(
 
         for col_idx, header in enumerate(SEA_RATES_SHIPMENT_COLUMNS, start=1):
             value = shipment_row[header]
-            ws.cell(
+            cell = ws.cell(
                 row=excel_row,
                 column=col_idx,
-                value=None if value == "" or pd.isna(value) else value,
+                value=format_shipment_cell_value(value),
             )
+            apply_two_decimal_number_format(cell)
 
         cost_col = shipment_count + 1
         for block in cost_blocks:
@@ -567,9 +570,13 @@ def write_sea_rates_sheet(
                     amount = _format_cell_value(ocean_row.get(value_column.source_column))
                     if amount is not None:
                         value_cell = ws.cell(row=excel_row, column=cost_col + offset, value=amount)
-                        value_cell.number_format = "0.00##"
+                        value_cell.number_format = "0.00"
 
             cost_col += _block_width(block)
+
+    last_data_column = cost_col - 1
+    if last_data_column >= 1:
+        highlight_fully_duplicate_lane_rows(ws, last_data_column=last_data_column)
 
     for col_idx in range(1, cost_col):
         ws.column_dimensions[get_column_letter(col_idx)].width = 18
