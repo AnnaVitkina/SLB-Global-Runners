@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 
 import pandas as pd
@@ -77,6 +78,7 @@ SUPPLIER_CARRIER_RULES: tuple[SupplierCarrierRule, ...] = (
     SupplierCarrierRule("dsv", frozenset({"CN"}), "DSV CN"),
     SupplierCarrierRule("dsv", frozenset({"RO"}), "DSV UK"),
     SupplierCarrierRule("dsv", frozenset({"US"}), "DSV US"),
+    SupplierCarrierRule("dsv", ANY_ORIGIN, "DSV US"),
     SupplierCarrierRule("expeditors", frozenset({"IN"}), "EI AE Int"),
     SupplierCarrierRule(
         "expeditors",
@@ -147,16 +149,106 @@ def lookup_fred_supplier_name(
     return best_rule.resolve_carrier_name(transport_mode)
 
 
+_DSV_CARRIER_PATTERN = re.compile(r"^DSV(\s|$|/|-)", re.IGNORECASE)
+
+
+def is_dsv_supplier_text(value: object) -> bool:
+    return _canonical_supplier(value) == "dsv"
+
+
+def is_dsv_carrier_name(value: object) -> bool:
+    text = _cell_text(value)
+    if not text:
+        return False
+    upper = text.upper()
+    if upper in {"DSV", "DSV US/DSV CN"}:
+        return True
+    if _DSV_CARRIER_PATTERN.match(text):
+        return True
+    return is_dsv_supplier_text(value)
+
+
+def apply_dsv_carrier_display(
+    carrier_name: object,
+    origin_country: object,
+    destination_country: object | None = None,
+) -> str:
+    text = _cell_text(carrier_name)
+    if not text and not is_dsv_supplier_text(carrier_name):
+        return text
+    if not is_dsv_carrier_name(text) and not is_dsv_supplier_text(carrier_name):
+        return text
+
+    origin = _normalize_origin(origin_country)
+    destination = _normalize_origin(destination_country)
+    if origin == "CN" and destination == "MX":
+        return "DSV US/DSV CN"
+    return "DSV US"
+
+
+def coerce_dsv_display_name(
+    value: object,
+    origin_country: object,
+    destination_country: object | None = None,
+) -> str:
+    text = _cell_text(value)
+    if not is_dsv_carrier_name(text) and not is_dsv_supplier_text(value):
+        return text
+    display = apply_dsv_carrier_display(text or "DSV", origin_country, destination_country)
+    if _cell_text(display).upper() == "DSV":
+        return "DSV US"
+    return display
+
+
+def lookup_fred_supplier_display_name(
+    origin_country: object,
+    supplier: object,
+    *,
+    transport_mode: str | None = None,
+    destination_country: object | None = None,
+) -> str:
+    resolved = lookup_fred_supplier_name(
+        origin_country,
+        supplier,
+        transport_mode=transport_mode,
+    )
+    if not resolved and is_dsv_supplier_text(supplier):
+        resolved = "DSV"
+
+    display = coerce_dsv_display_name(
+        resolved or supplier,
+        origin_country,
+        destination_country,
+    )
+    return display
+
+
 def map_fred_supplier_names(
     origin_countries: pd.Series,
     suppliers: pd.Series,
     *,
     transport_mode: str | None = None,
+    destination_countries: pd.Series | None = None,
 ) -> pd.Series:
+    if destination_countries is None:
+        destinations: list[object] = [None] * len(origin_countries)
+    else:
+        destinations = list(destination_countries)
+
     return pd.Series(
         [
-            lookup_fred_supplier_name(origin, supplier, transport_mode=transport_mode)
-            for origin, supplier in zip(origin_countries, suppliers, strict=False)
+            lookup_fred_supplier_display_name(
+                origin,
+                supplier,
+                transport_mode=transport_mode,
+                destination_country=destination,
+            )
+            for origin, supplier, destination in zip(
+                origin_countries,
+                suppliers,
+                destinations,
+                strict=False,
+            )
         ],
         index=origin_countries.index,
         dtype="object",
