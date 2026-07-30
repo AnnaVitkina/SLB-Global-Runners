@@ -26,6 +26,7 @@ from rate_layout_common import (
     apply_grouped_second_column_fill,
     format_cell_value,
     format_shipment_cell_value,
+    GREEN_FILL,
     highlight_fully_duplicate_lane_rows,
     apply_two_decimal_number_format,
 )
@@ -576,7 +577,15 @@ def write_sea_rates_sheet(
 
     last_data_column = cost_col - 1
     if last_data_column >= 1:
-        highlight_fully_duplicate_lane_rows(ws, last_data_column=last_data_column)
+        highlight_fully_duplicate_lane_rows(
+            ws,
+            shipment_columns=SEA_RATES_SHIPMENT_COLUMNS,
+            last_data_column=last_data_column,
+            duplicate_lane_columns=tuple(
+                header for header in SEA_RATES_SHIPMENT_COLUMNS if header in SEA_BOLD_SHIPMENT_COLUMNS
+            ),
+            fill=GREEN_FILL,
+        )
 
     for col_idx in range(1, cost_col):
         ws.column_dimensions[get_column_letter(col_idx)].width = 18
