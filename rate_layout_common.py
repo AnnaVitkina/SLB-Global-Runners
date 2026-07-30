@@ -35,6 +35,11 @@ LEFT = Alignment(horizontal="left", vertical="center", wrap_text=True)
 CENTER = Alignment(horizontal="center", vertical="center", wrap_text=True)
 
 CURRENCY_COLUMN = "Quoting Currency"
+CURRENCY_SOURCE_COLUMNS = (
+    "Quoting Currency",
+    "Currency",
+    "Quoting currency",
+)
 
 FTL_PRE_CARRIAGE_COL = "FTL Pre-carriage (Flat fee)"
 LTL_MIN_PRE_CARRIAGE_COL = "LTL Pre-carriage (Minimum fee)"
@@ -549,7 +554,7 @@ def load_ocean_dataframe(processing_path: Path | None = None) -> pd.DataFrame:
     )
     if sheet_name is None:
         raise ValueError(f"Sheet '{OCEAN_SOURCE_SHEET}' not found in {path.name}")
-    return pd.read_excel(path, sheet_name=sheet_name)
+    return fill_missing_currencies(pd.read_excel(path, sheet_name=sheet_name))
 
 
 def load_air_dataframe(processing_path: Path | None = None) -> pd.DataFrame:
@@ -561,7 +566,7 @@ def load_air_dataframe(processing_path: Path | None = None) -> pd.DataFrame:
     )
     if sheet_name is None:
         raise ValueError(f"Sheet '{AIR_SOURCE_SHEET}' not found in {path.name}")
-    return pd.read_excel(path, sheet_name=sheet_name)
+    return fill_missing_currencies(pd.read_excel(path, sheet_name=sheet_name))
 
 
 def block_width(block: CostBlock) -> int:
@@ -574,9 +579,73 @@ def block_has_any_source_value(source_row: pd.Series, block: CostBlock) -> bool:
     for value_column in block.value_columns:
         if value_column.source_column is None:
             continue
-        if rate_value(source_row.get(value_column.source_column)) is not None:
+        raw_value = source_row.get(value_column.source_column)
+        if value_column.percent_over_costs:
+            if format_percent_over_costs_value(raw_value) is not None:
+                return True
+        elif format_cell_value(raw_value) is not None:
             return True
     return False
+
+
+def lane_uid_key(value: object) -> str:
+    return trim_lane_uid_suffix(value) or cell_text(value)
+
+
+def fill_missing_currencies(df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty:
+        return df
+
+    result = df.copy()
+    available_currency_columns = [
+        column for column in CURRENCY_SOURCE_COLUMNS if column in result.columns
+    ]
+    if not available_currency_columns:
+        return result
+
+    if CURRENCY_COLUMN not in result.columns:
+        result[CURRENCY_COLUMN] = pd.NA
+
+    for column in available_currency_columns:
+        result[CURRENCY_COLUMN] = result[CURRENCY_COLUMN].fillna(result[column])
+
+    if "Lane UID" in result.columns:
+        lane_currency = result.groupby(result["Lane UID"].map(lane_uid_key), dropna=False)[
+            CURRENCY_COLUMN
+        ].transform(lambda series: series.ffill().bfill())
+        result[CURRENCY_COLUMN] = result[CURRENCY_COLUMN].fillna(lane_currency)
+
+    result[CURRENCY_COLUMN] = result[CURRENCY_COLUMN].ffill().bfill()
+    return result
+
+
+def resolve_row_currency(
+    source_row: pd.Series,
+    source_df: pd.DataFrame | None = None,
+) -> str:
+    for column in CURRENCY_SOURCE_COLUMNS:
+        text = cell_text(source_row.get(column))
+        if text:
+            return text
+
+    if source_df is None or "Lane UID" not in source_df.columns:
+        return ""
+
+    lane_uid = lane_uid_key(source_row.get("Lane UID"))
+    if not lane_uid:
+        return ""
+
+    lane_rows = source_df.loc[
+        source_df["Lane UID"].map(lane_uid_key) == lane_uid
+    ]
+    for column in CURRENCY_SOURCE_COLUMNS:
+        if column not in lane_rows.columns:
+            continue
+        for value in lane_rows[column].tolist():
+            text = cell_text(value)
+            if text:
+                return text
+    return ""
 
 
 def row_matches_block(
@@ -844,11 +913,7 @@ def write_matrix_sheet(
                     freight_has_values = has_values
 
                 value_offset = 1 if block.include_currency else 0
-
-                if block.include_currency and has_values:
-                    currency = cell_text(ocean_row.get(CURRENCY_COLUMN))
-                    if currency:
-                        ws.cell(row=excel_row, column=cost_col, value=currency)
+                values_written = 0
 
                 if has_values and block.fill_when_min_equals_max and len(block.value_columns) == 1:
                     _, max_value, _ = pre_carriage_min_max_values(ocean_row)
@@ -858,6 +923,8 @@ def write_matrix_sheet(
                         cost_col + value_offset,
                         format_cell_value(max_value),
                     )
+                    if format_cell_value(max_value) is not None:
+                        values_written += 1
                 elif has_values and block.fill_when_min_not_equals_max and len(block.value_columns) == 3:
                     min_value, max_value, punit_value = pre_carriage_min_max_values(ocean_row)
                     write_rate_value_cell(
@@ -878,6 +945,13 @@ def write_matrix_sheet(
                         cost_col + value_offset + 2,
                         format_cell_value(max_value),
                     )
+                    for formatted in (
+                        format_cell_value(min_value),
+                        format_cell_value(punit_value),
+                        format_cell_value(max_value),
+                    ):
+                        if formatted is not None:
+                            values_written += 1
 
                     if (
                         highlight_min_gt_max
@@ -903,6 +977,13 @@ def write_matrix_sheet(
                             cost_col + offset,
                             formatted,
                         )
+                        if formatted is not None:
+                            values_written += 1
+
+                if block.include_currency and values_written > 0:
+                    currency = resolve_row_currency(ocean_row, ocean_df)
+                    if currency:
+                        ws.cell(row=excel_row, column=cost_col, value=currency)
 
             cost_col += block_width(block)
 
