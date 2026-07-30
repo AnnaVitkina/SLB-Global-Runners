@@ -11,16 +11,20 @@ from carrier_groups import CARRIER_GROUP_HOU, CARRIER_GROUP_MEA, CARRIER_GROUP_R
 from rate_layout_common import (
     CostBlock,
     CostValueColumn,
+    DZS_AEI_SUPPLIER_NAME,
     apply_grouped_second_column_fill,
+    capitalize_type_label,
     cell_text,
+    display_text,
     format_date,
     get_rate_card_name,
     load_air_dataframe,
     output_workbook_path,
     save_output_sheet,
+    trim_lane_uid_suffix,
     write_matrix_sheet,
 )
-from supplier_name_lookup import coerce_dsv_display_name, map_fred_supplier_names
+from supplier_name_lookup import map_fred_supplier_names
 
 AIR_MAWB_SHEET = "Air MAWB rate"
 AIR_HAWB_SHEET = "Air HAWB rate"
@@ -84,15 +88,40 @@ AIR_DEST_BASE_CITY_GROUP_COLUMNS = tuple(
 )
 
 
-def trim_air_lane_uid(lane_uid: object) -> str:
-    text = cell_text(lane_uid)
-    if not text:
-        return ""
-    upper = text.upper()
-    for suffix in ("MAWB", "HAWB"):
-        if upper.endswith(suffix):
-            return text[: -len(suffix)]
-    return text
+def is_dhl_us_to_ec_lane(air_row: pd.Series, supplier_name: object) -> bool:
+    if cell_text(air_row.get("Origin Country Code")).upper() != "US":
+        return False
+    if cell_text(air_row.get("Destination Country Code")).upper() != "EC":
+        return False
+    supplier_q = cell_text(air_row.get("Supplier Name (Q)")).lower()
+    mapped_name = cell_text(supplier_name).lower()
+    return "dhl" in supplier_q or "dhl" in mapped_name
+
+
+def duplicate_dhl_us_ec_dzs_rows(
+    source_df: pd.DataFrame,
+    shipment_df: pd.DataFrame,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    source_rows: list[pd.Series] = []
+    shipment_rows: list[pd.Series] = []
+
+    for idx in range(len(shipment_df)):
+        source_row = source_df.iloc[idx]
+        shipment_row = shipment_df.iloc[idx]
+        if not is_dhl_us_to_ec_lane(source_row, shipment_row["Supplier name"]):
+            continue
+        dzs_shipment = shipment_row.copy()
+        dzs_shipment["Supplier name"] = DZS_AEI_SUPPLIER_NAME
+        source_rows.append(source_row)
+        shipment_rows.append(dzs_shipment)
+
+    if not source_rows:
+        return source_df, shipment_df
+
+    return (
+        pd.concat([source_df, pd.DataFrame(source_rows)], ignore_index=True),
+        pd.concat([shipment_df, pd.DataFrame(shipment_rows)], ignore_index=True),
+    )
 
 
 def build_air_shipment_df(
@@ -102,40 +131,28 @@ def build_air_shipment_df(
     type_value: str,
 ) -> pd.DataFrame:
     empty = pd.Series([""] * len(air_df), index=air_df.index, dtype="object")
-    type_series = pd.Series([type_value] * len(air_df), index=air_df.index, dtype="object")
+    type_series = pd.Series(
+        [capitalize_type_label(type_value)] * len(air_df),
+        index=air_df.index,
+        dtype="object",
+    )
 
     return pd.DataFrame(
         {
             "Rate Card": rc_name,
-            "Scope of work": air_df["Scope of Work"],
-            "Service type": air_df["Service Type"],
-            "Lane UID": air_df["Lane UID"].map(trim_air_lane_uid),
-            "Origin country code": air_df["Origin Country Code"],
-            "Origin base city": air_df["Origin Base City"],
-            "Departure airport city": air_df["Departure Airport City"],
-            "Departure airport code": air_df["Departure Aiport Code"],
-            "Destination country code": air_df["Destination Country Code"],
-            "Destination airport city": air_df["Destination Airport City"],
-            "Destination airport code": air_df["Destination Airport Code"],
-            "Destination base city": air_df["Destination Base City"],
+            "Scope of work": air_df["Scope of Work"].map(display_text),
+            "Service type": air_df["Service Type"].map(display_text),
+            "Lane UID": air_df["Lane UID"].map(trim_lane_uid_suffix),
+            "Origin country code": air_df["Origin Country Code"].map(display_text),
+            "Origin base city": air_df["Origin Base City"].map(display_text),
+            "Departure airport city": air_df["Departure Airport City"].map(display_text),
+            "Departure airport code": air_df["Departure Aiport Code"].map(display_text),
+            "Destination country code": air_df["Destination Country Code"].map(display_text),
+            "Destination airport city": air_df["Destination Airport City"].map(display_text),
+            "Destination airport code": air_df["Destination Airport Code"].map(display_text),
+            "Destination base city": air_df["Destination Base City"].map(display_text),
             "Destination base city (second)": empty,
-            "Supplier name (Q)": pd.Series(
-                [
-                    coerce_dsv_display_name(
-                        value,
-                        origin,
-                        destination,
-                    )
-                    for value, origin, destination in zip(
-                        air_df["Supplier Name (Q)"],
-                        air_df["Origin Country Code"],
-                        air_df["Destination Country Code"],
-                        strict=False,
-                    )
-                ],
-                index=air_df.index,
-                dtype="object",
-            ),
+            "Supplier name (Q)": air_df["Supplier Name (Q)"].map(display_text),
             "Supplier name": map_fred_supplier_names(
                 air_df["Origin Country Code"],
                 air_df["Supplier Name (Q)"],
@@ -207,10 +224,10 @@ def build_air_carrier_group_cost_blocks(
     blocks.append(
         CostBlock(
             title=export_specs[3][0],
-            apply_if="Apply if: Supplier name equals 'EI AE Int/EI IAH'",
+            apply_if="Apply if: Supplier name equals 'DZS AEI'",
             rate_by="Rate by: Per shipment",
             value_columns=(CostValueColumn("p/unit", export_specs[3][1]),),
-            match_dzs_aei_carrier_lane=True,
+            match_supplier_name=DZS_AEI_SUPPLIER_NAME,
         )
     )
 
@@ -245,10 +262,10 @@ def build_air_carrier_group_cost_blocks(
     blocks.append(
         CostBlock(
             title="Air Screening fee (DZS AEI)",
-            apply_if="Apply if: Supplier name equals 'EI AE Int/EI IAH'",
+            apply_if="Apply if: Supplier name equals 'DZS AEI'",
             rate_by="Rate by: Per shipment",
             value_columns=(CostValueColumn("p/unit", SCREENING_FEE_COL),),
-            match_dzs_aei_carrier_lane=True,
+            match_supplier_name=DZS_AEI_SUPPLIER_NAME,
         )
     )
 
@@ -323,6 +340,7 @@ def build_air_rates(
             second_column="Destination base city (second)",
             group_columns=AIR_DEST_BASE_CITY_GROUP_COLUMNS,
         )
+        filtered_air_df, shipment_df = duplicate_dhl_us_ec_dzs_rows(filtered_air_df, shipment_df)
 
         def write_sheet(
             worksheet,
@@ -337,6 +355,7 @@ def build_air_rates(
                 cost_blocks,
                 transport_mode="air",
                 bold_shipment_columns=AIR_BOLD_SHIPMENT_COLUMNS,
+                highlight_missing_freight_block="Freight Air Intl",
             )
 
         save_output_sheet(sheet_name, write_sheet, output_path=path)
