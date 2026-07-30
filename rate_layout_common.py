@@ -12,7 +12,7 @@ from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.worksheet import Worksheet
 
 from project_paths import INPUT_DIR, OUTPUT_DIR, PROCESSING_DIR, ensure_workspace_dirs
-from supplier_name_lookup import coerce_dsv_display_name, map_fred_supplier_names
+from supplier_name_lookup import map_fred_supplier_names
 
 OCEAN_SOURCE_SHEET = "Ocean"
 AIR_SOURCE_SHEET = "Air"
@@ -27,6 +27,8 @@ DATA_START_ROW = 5
 
 HEADER_FILL = PatternFill("solid", fgColor="D9D9D9")
 BLUE_FILL = PatternFill("solid", fgColor="BDD7EE")
+GREEN_FILL = PatternFill("solid", fgColor="C6EFCE")
+RED_FILL = PatternFill("solid", fgColor="FFC7CE")
 BOLD = Font(bold=True)
 NORMAL = Font()
 LEFT = Alignment(horizontal="left", vertical="center", wrap_text=True)
@@ -128,6 +130,7 @@ class CostBlock:
     match_carrier_groups: tuple[str, ...] | None = None
     match_arx_carrier_lane: bool = False
     match_dzs_aei_carrier_lane: bool = False
+    match_supplier_name: str | None = None
     exclude_arx_carrier_lane: bool = False
     exclude_dzs_aei_carrier_lane: bool = False
     fill_when_min_equals_max: bool = False
@@ -139,6 +142,33 @@ def cell_text(value: object) -> str:
     if pd.isna(value):
         return ""
     return str(value).strip()
+
+
+def display_text(value: object) -> str:
+    if pd.isna(value):
+        return ""
+    return str(value).lstrip()
+
+
+def capitalize_type_label(value: object) -> str:
+    text = display_text(value)
+    if not text:
+        return ""
+    return text[0].upper() + text[1:]
+
+
+def trim_lane_uid_suffix(lane_uid: object) -> str:
+    text = display_text(lane_uid)
+    if not text:
+        return ""
+    upper = text.upper()
+    for suffix in ("MAWB", "HAWB"):
+        if upper.endswith(suffix):
+            return text[: -len(suffix)]
+    return text
+
+
+DZS_AEI_SUPPLIER_NAME = "DZS AEI"
 
 
 def format_date(value: object) -> str:
@@ -182,7 +212,8 @@ def format_shipment_cell_value(value: object) -> object:
     rounded = round_numeric_output(value)
     if rounded is not None:
         return rounded
-    return value
+    text = display_text(value)
+    return text or None
 
 
 def apply_two_decimal_number_format(cell) -> None:
@@ -323,24 +354,12 @@ def build_road_precarriage_shipment_from_air(
         {
             "Rate card": rc_name,
             "Service Type": air_df["Service Type"],
-            "Lane UID": air_df["Lane UID"],
+            "Lane UID": air_df["Lane UID"].map(trim_lane_uid_suffix),
             "Origin Country": air_df["Origin Country Code"],
             "Origin Base City": air_df["Origin Base City"],
             "Destination Country": air_df["Origin Country Code"],
             "Service": service,
-            "Supplier Name (Q)": pd.Series(
-                [
-                    coerce_dsv_display_name(value, origin, destination)
-                    for value, origin, destination in zip(
-                        air_df["Supplier Name (Q)"],
-                        air_df["Origin Country Code"],
-                        air_df["Destination Country Code"],
-                        strict=False,
-                    )
-                ],
-                index=air_df.index,
-                dtype="object",
-            ),
+            "Supplier Name (Q)": air_df["Supplier Name (Q)"].map(display_text),
             "Carrier Name": map_fred_supplier_names(
                 air_df["Origin Country Code"],
                 air_df["Supplier Name (Q)"],
@@ -551,12 +570,28 @@ def block_width(block: CostBlock) -> int:
     return len(block.value_columns)
 
 
+def block_has_any_source_value(source_row: pd.Series, block: CostBlock) -> bool:
+    for value_column in block.value_columns:
+        if value_column.source_column is None:
+            continue
+        if rate_value(source_row.get(value_column.source_column)) is not None:
+            return True
+    return False
+
+
 def row_matches_block(
     source_row: pd.Series,
     block: CostBlock,
     *,
     transport_mode: str | None = None,
+    shipment_row: pd.Series | None = None,
+    supplier_name_column: str = "Supplier name",
 ) -> bool:
+    if block.match_supplier_name is not None:
+        if shipment_row is None:
+            return False
+        return cell_text(shipment_row.get(supplier_name_column)) == block.match_supplier_name
+
     if block.match_equipment_type is not None:
         source_equipment = cell_text(source_row["Equipment Type"])
         if output_equipment_type(source_equipment) != block.match_equipment_type:
@@ -568,14 +603,12 @@ def row_matches_block(
     if (
         block.match_carrier_groups is not None
         or block.match_arx_carrier_lane
-        or block.match_dzs_aei_carrier_lane
         or block.exclude_arx_carrier_lane
         or block.exclude_dzs_aei_carrier_lane
     ):
         from carrier_groups import (
             carrier_group_for_origin,
             is_arx_carrier_supplier_name,
-            is_dzs_aei_carrier_supplier_name,
         )
         from supplier_name_lookup import lookup_fred_supplier_name
 
@@ -586,16 +619,14 @@ def row_matches_block(
             transport_mode=transport_mode,
         )
         arx_lane = is_arx_carrier_supplier_name(supplier_name)
-        dzs_aei_lane = is_dzs_aei_carrier_supplier_name(supplier_name)
 
         if block.match_arx_carrier_lane:
             return arx_lane
-        if block.match_dzs_aei_carrier_lane:
-            return dzs_aei_lane
         if block.exclude_arx_carrier_lane and arx_lane:
             return False
-        if block.exclude_dzs_aei_carrier_lane and dzs_aei_lane:
-            return False
+        if block.exclude_dzs_aei_carrier_lane and shipment_row is not None:
+            if cell_text(shipment_row.get(supplier_name_column)) == DZS_AEI_SUPPLIER_NAME:
+                return False
         if block.match_carrier_groups is not None:
             carrier_group = carrier_group_for_origin(source_row.get("Origin Country Code"))
             if carrier_group not in block.match_carrier_groups:
@@ -616,8 +647,16 @@ def should_fill_block(
     block: CostBlock,
     *,
     transport_mode: str | None = None,
+    shipment_row: pd.Series | None = None,
+    supplier_name_column: str = "Supplier name",
 ) -> bool:
-    if not row_matches_block(source_row, block, transport_mode=transport_mode):
+    if not row_matches_block(
+        source_row,
+        block,
+        transport_mode=transport_mode,
+        shipment_row=shipment_row,
+        supplier_name_column=supplier_name_column,
+    ):
         return False
     if not (block.fill_when_min_equals_max or block.fill_when_min_not_equals_max):
         return True
@@ -707,30 +746,44 @@ def _normalize_row_cell_for_signature(value: object) -> str:
     return str(value).strip()
 
 
-def highlight_fully_duplicate_lane_rows(ws: Worksheet, *, last_data_column: int) -> int:
-    """Blue-fill rows where shipment + cost columns are identical to another row."""
-    if last_data_column < 1 or ws.max_row < DATA_START_ROW:
+def highlight_fully_duplicate_lane_rows(
+    ws: Worksheet,
+    *,
+    shipment_columns: list[str],
+    last_data_column: int,
+    duplicate_lane_columns: tuple[str, ...],
+    fill: PatternFill | None = None,
+) -> int:
+    """Fill rows where the selected shipment columns match another row."""
+    if last_data_column < 1 or ws.max_row < DATA_START_ROW or not duplicate_lane_columns:
         return 0
 
     from collections import defaultdict
+
+    include_columns = [
+        col_idx
+        for col_idx, header in enumerate(shipment_columns, start=1)
+        if header in duplicate_lane_columns
+    ]
 
     rows_by_signature: dict[str, list[int]] = defaultdict(list)
     for row_idx in range(DATA_START_ROW, ws.max_row + 1):
         signature = "\x1f".join(
             _normalize_row_cell_for_signature(ws.cell(row=row_idx, column=col_idx).value)
-            for col_idx in range(1, last_data_column + 1)
+            for col_idx in include_columns
         )
         if not signature.replace("\x1f", ""):
             continue
         rows_by_signature[signature].append(row_idx)
 
+    row_fill = fill or GREEN_FILL
     highlighted_rows = 0
     for row_indices in rows_by_signature.values():
         if len(row_indices) < 2:
             continue
         for row_idx in row_indices:
             for col_idx in range(1, last_data_column + 1):
-                ws.cell(row=row_idx, column=col_idx).fill = BLUE_FILL
+                ws.cell(row=row_idx, column=col_idx).fill = row_fill
             highlighted_rows += 1
     return highlighted_rows
 
@@ -744,8 +797,11 @@ def write_matrix_sheet(
     *,
     highlight_min_gt_max: bool = False,
     highlight_duplicate_lanes: bool = True,
+    duplicate_lane_columns: tuple[str, ...] | None = None,
+    highlight_missing_freight_block: str | None = None,
     transport_mode: str | None = None,
     bold_shipment_columns: frozenset[str] | None = None,
+    supplier_name_column: str = "Supplier name",
 ) -> None:
     shipment_count = len(shipment_columns)
     bold_columns = bold_shipment_columns or frozenset()
@@ -774,16 +830,27 @@ def write_matrix_sheet(
             apply_two_decimal_number_format(cell)
 
         cost_col = shipment_count + 1
+        freight_has_values = False
         for block in cost_blocks:
-            if should_fill_block(ocean_row, block, transport_mode=transport_mode):
+            if should_fill_block(
+                ocean_row,
+                block,
+                transport_mode=transport_mode,
+                shipment_row=shipment_row,
+                supplier_name_column=supplier_name_column,
+            ):
+                has_values = block_has_any_source_value(ocean_row, block)
+                if highlight_missing_freight_block and block.title == highlight_missing_freight_block:
+                    freight_has_values = has_values
+
                 value_offset = 1 if block.include_currency else 0
 
-                if block.include_currency:
+                if block.include_currency and has_values:
                     currency = cell_text(ocean_row.get(CURRENCY_COLUMN))
                     if currency:
                         ws.cell(row=excel_row, column=cost_col, value=currency)
 
-                if block.fill_when_min_equals_max and len(block.value_columns) == 1:
+                if has_values and block.fill_when_min_equals_max and len(block.value_columns) == 1:
                     _, max_value, _ = pre_carriage_min_max_values(ocean_row)
                     write_rate_value_cell(
                         ws,
@@ -791,7 +858,7 @@ def write_matrix_sheet(
                         cost_col + value_offset,
                         format_cell_value(max_value),
                     )
-                elif block.fill_when_min_not_equals_max and len(block.value_columns) == 3:
+                elif has_values and block.fill_when_min_not_equals_max and len(block.value_columns) == 3:
                     min_value, max_value, punit_value = pre_carriage_min_max_values(ocean_row)
                     write_rate_value_cell(
                         ws,
@@ -820,7 +887,7 @@ def write_matrix_sheet(
                     ):
                         ws.cell(row=excel_row, column=cost_col + value_offset).fill = BLUE_FILL
                         ws.cell(row=excel_row, column=cost_col + value_offset + 2).fill = BLUE_FILL
-                else:
+                elif has_values:
                     for offset, value_column in enumerate(block.value_columns, start=value_offset):
                         source_column = value_column.source_column
                         if source_column is None:
@@ -839,9 +906,25 @@ def write_matrix_sheet(
 
             cost_col += block_width(block)
 
+        if highlight_missing_freight_block and not freight_has_values:
+            for col_idx in range(1, cost_col):
+                ws.cell(row=excel_row, column=col_idx).fill = RED_FILL
+
     last_data_column = cost_col - 1
     if highlight_duplicate_lanes and last_data_column >= 1:
-        highlight_fully_duplicate_lane_rows(ws, last_data_column=last_data_column)
+        lane_columns = duplicate_lane_columns
+        if lane_columns is None and bold_columns:
+            lane_columns = tuple(
+                header for header in shipment_columns if header in bold_columns
+            )
+        if lane_columns:
+            highlight_fully_duplicate_lane_rows(
+                ws,
+                shipment_columns=shipment_columns,
+                last_data_column=last_data_column,
+                duplicate_lane_columns=lane_columns,
+                fill=GREEN_FILL,
+            )
 
     for col_idx in range(1, cost_col):
         ws.column_dimensions[get_column_letter(col_idx)].width = 18
