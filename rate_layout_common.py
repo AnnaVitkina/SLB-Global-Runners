@@ -150,6 +150,35 @@ def cell_text(value: object) -> str:
     return str(value).strip()
 
 
+def normalize_decimal_separator(text: str) -> str:
+    """Replace comma decimal separators with dots."""
+    return text.replace(",", ".")
+
+
+def normalize_numeric_cell_value(value: object) -> object:
+    """Normalize comma-formatted numeric strings to dot decimals (as float)."""
+    if pd.isna(value):
+        return value
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value
+    text = str(value).strip()
+    if "," not in text:
+        return value
+    normalized = normalize_decimal_separator(text)
+    try:
+        return float(normalized)
+    except ValueError:
+        return value
+
+
+def normalize_dataframe_decimal_separators(df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty:
+        return df
+    return df.map(normalize_numeric_cell_value)
+
+
 def display_text(value: object) -> str:
     if pd.isna(value):
         return ""
@@ -192,8 +221,9 @@ def rate_value(value: object) -> float | None:
     text = cell_text(value)
     if not text or text.lower() in {"on request", "n/a", "#n/a"}:
         return None
+    normalized = normalize_decimal_separator(text)
     try:
-        return float(str(value).replace(",", "."))
+        return float(normalized)
     except (TypeError, ValueError):
         return None
 
@@ -205,10 +235,24 @@ def _round_half_up_2(number: float) -> float:
 
 
 def round_numeric_output(value: object) -> float | None:
-    number = rate_value(value)
-    if number is None:
+    if pd.isna(value):
         return None
-    return _round_half_up_2(float(number))
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        number = float(value)
+        if pd.isna(number):
+            return None
+        return _round_half_up_2(number)
+
+    text = cell_text(value)
+    if not text or text.lower() in {"on request", "n/a", "#n/a"}:
+        return None
+    normalized = normalize_decimal_separator(text)
+    try:
+        decimal_value = Decimal(normalized)
+    except Exception:
+        return None
+    quantized = decimal_value.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    return float(quantized)
 
 
 def format_cell_value(value: object) -> object:
@@ -225,7 +269,16 @@ def format_shipment_cell_value(value: object) -> object:
     if rounded is not None:
         return rounded
     text = display_text(value)
-    return text or None
+    if not text:
+        return None
+    if "," in text:
+        normalized = normalize_decimal_separator(text)
+        try:
+            float(normalized)
+            return normalized
+        except ValueError:
+            pass
+    return text
 
 
 def apply_two_decimal_number_format(cell) -> None:
@@ -819,7 +872,15 @@ def _normalize_row_cell_for_signature(value: object) -> str:
         if pd.isna(number):
             return ""
         return f"{_round_half_up_2(number):.2f}"
-    return str(value).strip()
+    text = str(value).strip()
+    if "," in text:
+        normalized = normalize_decimal_separator(text)
+        try:
+            float(normalized)
+            return normalized
+        except ValueError:
+            pass
+    return text
 
 
 def highlight_fully_duplicate_lane_rows(
