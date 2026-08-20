@@ -14,7 +14,13 @@ from supplier_name_lookup import (
     is_dsv_carrier_name,
     is_dsv_supplier_text,
 )
-from rate_layout_common import COLUMN_HEADER_ROW, DATA_START_ROW, cell_text
+from rate_layout_common import (
+    COLUMN_HEADER_ROW,
+    DATA_START_ROW,
+    cell_text,
+    normalize_dataframe_decimal_separators,
+    save_workbook_normalized,
+)
 
 CONDITIONS_SHEET = "Conditions"
 
@@ -274,7 +280,7 @@ def apply_conditions_to_workbook(output_path) -> int:
     conditions_ws = workbook.create_sheet(CONDITIONS_SHEET)
     _write_conditions_sheet(conditions_ws, conditions_df)
 
-    workbook.save(output_path)
+    save_workbook_normalized(workbook, output_path)
     return total_replacements
 
 
