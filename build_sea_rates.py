@@ -26,11 +26,14 @@ from rate_layout_common import (
     apply_grouped_second_column_fill,
     fill_missing_currencies,
     format_cell_value,
+    format_dot_decimal_value,
     format_shipment_cell_value,
     GREEN_FILL,
     highlight_fully_duplicate_lane_rows,
     apply_two_decimal_number_format,
     resolve_row_currency,
+    save_workbook_normalized,
+    write_rate_value_cell,
 )
 from supplier_name_lookup import lookup_fred_supplier_name, map_fred_supplier_names
 
@@ -557,8 +560,7 @@ def write_sea_rates_sheet(
                 for offset, value_column in enumerate(block.value_columns, start=1):
                     amount = _format_cell_value(ocean_row.get(value_column.source_column))
                     if amount is not None:
-                        value_cell = ws.cell(row=excel_row, column=cost_col + offset, value=amount)
-                        value_cell.number_format = "0.00"
+                        write_rate_value_cell(ws, excel_row, cost_col + offset, amount)
                         values_written += 1
 
                 if values_written > 0:
@@ -609,7 +611,7 @@ def save_sea_rates_workbook(
         worksheet.title = SEA_RATES_SHEET
 
     write_sea_rates_sheet(worksheet, ocean_df, shipment_df, cost_blocks)
-    workbook.save(path)
+    save_workbook_normalized(workbook, path)
     return path
 
 
