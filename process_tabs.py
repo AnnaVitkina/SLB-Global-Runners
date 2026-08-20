@@ -14,6 +14,7 @@ from pathlib import Path
 import pandas as pd
 
 from project_paths import INPUT_DIR, PROCESSING_DIR, ensure_workspace_dirs
+from rate_layout_common import normalize_dataframe_decimal_separators
 
 EXCEL_SUFFIXES = {".xlsx", ".xls", ".xlsm"}
 DEFAULT_TABS = ("Ocean", "Air")
@@ -379,14 +380,14 @@ def clean_tab_df(df_raw: pd.DataFrame) -> pd.DataFrame:
     if header_row_idx is None:
         cleaned = _drop_empty_rows(df_raw)
         cleaned.columns = _normalize_headers(list(cleaned.columns))
-        return cleaned.reset_index(drop=True)
+        return normalize_dataframe_decimal_separators(cleaned.reset_index(drop=True))
 
     headers = _normalize_headers(df_raw.iloc[header_row_idx].tolist())
     df = df_raw.iloc[header_row_idx + 1 :].copy()
     df.columns = headers
     df = _drop_empty_rows(df)
     df = _drop_empty_columns(df)
-    return df.reset_index(drop=True)
+    return normalize_dataframe_decimal_separators(df.reset_index(drop=True))
 
 
 def tab_to_df(file_path: Path, sheet_name: str) -> pd.DataFrame:
