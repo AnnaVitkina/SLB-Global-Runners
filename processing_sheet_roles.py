@@ -5,8 +5,14 @@ from __future__ import annotations
 from pathlib import Path
 
 import pandas as pd
+from openpyxl import load_workbook
 
-from rate_layout_common import AIR_SOURCE_SHEET, OCEAN_SOURCE_SHEET
+from rate_layout_common import (
+    AIR_SOURCE_SHEET,
+    OCEAN_SOURCE_SHEET,
+    normalize_dataframe_decimal_separators,
+    save_workbook_normalized,
+)
 
 ROLE_OCEAN = "ocean"
 ROLE_AIR = "air"
@@ -115,7 +121,8 @@ def resolve_processing_sheets(
         return processing_path
 
     frames: dict[str, pd.DataFrame] = {
-        name: pd.read_excel(processing_path, sheet_name=name) for name in sheet_names
+        name: normalize_dataframe_decimal_separators(pd.read_excel(processing_path, sheet_name=name))
+        for name in sheet_names
     }
 
     if ocean_source is not None and ocean_tab is None:
@@ -130,4 +137,6 @@ def resolve_processing_sheets(
         for name, frame in frames.items():
             frame.to_excel(writer, sheet_name=name, index=False)
 
+    workbook = load_workbook(processing_path)
+    save_workbook_normalized(workbook, processing_path)
     return processing_path
