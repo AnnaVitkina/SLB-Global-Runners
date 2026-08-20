@@ -35,6 +35,11 @@ NORMAL = Font()
 LEFT = Alignment(horizontal="left", vertical="center", wrap_text=True)
 CENTER = Alignment(horizontal="center", vertical="center", wrap_text=True)
 
+# Force dot as decimal separator in Excel regardless of regional settings.
+TWO_DECIMAL_NUMBER_FORMAT = "[$-409]0.00"
+US_GENERAL_NUMBER_FORMAT = "[$-409]General"
+TEXT_NUMBER_FORMAT = "@"
+
 CURRENCY_COLUMN = "Quoting Currency"
 CURRENCY_SOURCE_COLUMNS = (
     "Quoting Currency",
@@ -156,7 +161,7 @@ def normalize_decimal_separator(text: str) -> str:
 
 
 def normalize_numeric_cell_value(value: object) -> object:
-    """Normalize comma-formatted numeric strings to dot decimals (as float)."""
+    """Replace commas with dots; parse numeric strings to float."""
     if pd.isna(value):
         return value
     if isinstance(value, bool):
@@ -170,7 +175,7 @@ def normalize_numeric_cell_value(value: object) -> object:
     try:
         return float(normalized)
     except ValueError:
-        return value
+        return normalized
 
 
 def normalize_dataframe_decimal_separators(df: pd.DataFrame) -> pd.DataFrame:
@@ -255,6 +260,20 @@ def round_numeric_output(value: object) -> float | None:
     return float(quantized)
 
 
+def format_dot_decimal_value(value: object) -> str | None:
+    """Format a numeric value as text with a dot decimal separator (e.g. 78.10)."""
+    rounded = round_numeric_output(value)
+    if rounded is None:
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            number = float(value)
+            if pd.isna(number):
+                return None
+            rounded = _round_half_up_2(number)
+        else:
+            return None
+    return f"{_round_half_up_2(float(rounded)):.2f}"
+
+
 def format_cell_value(value: object) -> object:
     rounded = round_numeric_output(value)
     if rounded is None:
@@ -265,19 +284,14 @@ def format_cell_value(value: object) -> object:
 def format_shipment_cell_value(value: object) -> object:
     if value == "" or pd.isna(value):
         return None
-    rounded = round_numeric_output(value)
-    if rounded is not None:
-        return rounded
+    dot_value = format_dot_decimal_value(value)
+    if dot_value is not None:
+        return dot_value
     text = display_text(value)
     if not text:
         return None
     if "," in text:
-        normalized = normalize_decimal_separator(text)
-        try:
-            float(normalized)
-            return normalized
-        except ValueError:
-            pass
+        return normalize_decimal_separator(text)
     return text
 
 
@@ -285,7 +299,55 @@ def apply_two_decimal_number_format(cell) -> None:
     if isinstance(cell.value, (int, float)) and not (
         isinstance(cell.value, float) and pd.isna(cell.value)
     ):
-        cell.number_format = "0.00"
+        display = format_dot_decimal_value(cell.value)
+        if display is not None:
+            cell.value = display
+            cell.number_format = TEXT_NUMBER_FORMAT
+    elif isinstance(cell.value, str):
+        text = cell.value.strip()
+        if "," in text:
+            cell.value = normalize_decimal_separator(text)
+        cell.number_format = TEXT_NUMBER_FORMAT
+
+
+def normalize_worksheet_values(ws: Worksheet) -> None:
+    """Replace comma with dot in strings; write numeric rates as dot-decimal text."""
+    for row in ws.iter_rows():
+        for cell in row:
+            value = cell.value
+            if value is None:
+                continue
+            if isinstance(value, str) and "," in value:
+                cell.value = normalize_numeric_cell_value(value)
+                value = cell.value
+            if isinstance(value, (int, float)) and not (
+                isinstance(value, float) and pd.isna(value)
+            ):
+                if cell.number_format in {
+                    "0.00",
+                    TWO_DECIMAL_NUMBER_FORMAT,
+                    "General",
+                    US_GENERAL_NUMBER_FORMAT,
+                }:
+                    display = format_dot_decimal_value(value)
+                    if display is not None:
+                        cell.value = display
+                        cell.number_format = TEXT_NUMBER_FORMAT
+            elif isinstance(cell.value, str) and cell.number_format in {
+                "0.00",
+                TWO_DECIMAL_NUMBER_FORMAT,
+            }:
+                cell.number_format = TEXT_NUMBER_FORMAT
+
+
+def normalize_workbook_values(workbook: Workbook) -> None:
+    for worksheet in workbook.worksheets:
+        normalize_worksheet_values(worksheet)
+
+
+def save_workbook_normalized(workbook: Workbook, path: Path) -> None:
+    normalize_workbook_values(workbook)
+    workbook.save(path)
 
 
 def format_percent_over_costs_value(value: object) -> object:
@@ -614,7 +676,9 @@ def load_ocean_dataframe(processing_path: Path | None = None) -> pd.DataFrame:
     )
     if sheet_name is None:
         raise ValueError(f"Sheet '{OCEAN_SOURCE_SHEET}' not found in {path.name}")
-    return fill_missing_currencies(pd.read_excel(path, sheet_name=sheet_name))
+    return fill_missing_currencies(
+        normalize_dataframe_decimal_separators(pd.read_excel(path, sheet_name=sheet_name))
+    )
 
 
 def load_air_dataframe(processing_path: Path | None = None) -> pd.DataFrame:
@@ -626,7 +690,9 @@ def load_air_dataframe(processing_path: Path | None = None) -> pd.DataFrame:
     )
     if sheet_name is None:
         raise ValueError(f"Sheet '{AIR_SOURCE_SHEET}' not found in {path.name}")
-    return fill_missing_currencies(pd.read_excel(path, sheet_name=sheet_name))
+    return fill_missing_currencies(
+        normalize_dataframe_decimal_separators(pd.read_excel(path, sheet_name=sheet_name))
+    )
 
 
 def block_width(block: CostBlock) -> int:
@@ -856,8 +922,11 @@ def write_cost_block_headers(ws: Worksheet, block: CostBlock, start_col: int) ->
 def write_rate_value_cell(ws: Worksheet, row: int, column: int, value: object) -> None:
     if value is None:
         return
-    cell = ws.cell(row=row, column=column, value=value)
-    cell.number_format = "0.00"
+    display = format_dot_decimal_value(value)
+    if display is None:
+        return
+    cell = ws.cell(row=row, column=column, value=display)
+    cell.number_format = TEXT_NUMBER_FORMAT
 
 
 def _normalize_row_cell_for_signature(value: object) -> str:
@@ -874,12 +943,7 @@ def _normalize_row_cell_for_signature(value: object) -> str:
         return f"{_round_half_up_2(number):.2f}"
     text = str(value).strip()
     if "," in text:
-        normalized = normalize_decimal_separator(text)
-        try:
-            float(normalized)
-            return normalized
-        except ValueError:
-            pass
+        return normalize_decimal_separator(text)
     return text
 
 
@@ -1098,5 +1162,5 @@ def save_output_sheet(
         worksheet.title = sheet_name
 
     write_sheet(worksheet)
-    workbook.save(path)
+    save_workbook_normalized(workbook, path)
     return path
