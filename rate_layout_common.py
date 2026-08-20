@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
 
 import pandas as pd
@@ -197,11 +198,17 @@ def rate_value(value: object) -> float | None:
         return None
 
 
+def _round_half_up_2(number: float) -> float:
+    """Round to 2 decimals using commercial half-up, not binary float round()."""
+    quantized = Decimal(str(number)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    return float(quantized)
+
+
 def round_numeric_output(value: object) -> float | None:
     number = rate_value(value)
     if number is None:
         return None
-    return round(float(number), 2)
+    return _round_half_up_2(float(number))
 
 
 def format_cell_value(value: object) -> object:
@@ -811,7 +818,7 @@ def _normalize_row_cell_for_signature(value: object) -> str:
         number = float(value)
         if pd.isna(number):
             return ""
-        return f"{round(number, 2):.2f}"
+        return f"{_round_half_up_2(number):.2f}"
     return str(value).strip()
 
 
