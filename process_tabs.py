@@ -14,7 +14,7 @@ from pathlib import Path
 import pandas as pd
 
 from project_paths import INPUT_DIR, PROCESSING_DIR, ensure_workspace_dirs
-from rate_layout_common import normalize_dataframe_decimal_separators
+from rate_layout_common import normalize_dataframe_decimal_separators, save_workbook_normalized
 
 EXCEL_SUFFIXES = {".xlsx", ".xls", ".xlsm"}
 DEFAULT_TABS = ("Ocean", "Air")
@@ -447,6 +447,10 @@ def save_combined_workbook(
             df.to_excel(writer, sheet_name=sheet_name, index=False)
             print(f"  Wrote tab: {sheet_name}")
 
+    from openpyxl import load_workbook
+
+    workbook = load_workbook(output_path)
+    save_workbook_normalized(workbook, output_path)
     return output_path
 
 
