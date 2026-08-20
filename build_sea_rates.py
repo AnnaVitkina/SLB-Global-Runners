@@ -158,18 +158,6 @@ def _map_service_type(service_type: object) -> str:
     return SERVICE_TYPE_MAP.get(text.upper(), text)
 
 
-def _rate_value(value: object) -> float | None:
-    if pd.isna(value):
-        return None
-    text = _cell_text(value)
-    if not text or text.lower() in {"on request", "n/a", "#n/a"}:
-        return None
-    try:
-        return float(str(value).replace(",", "."))
-    except (TypeError, ValueError):
-        return None
-
-
 def _format_cell_value(value: object) -> object:
     return format_cell_value(value)
 
