@@ -76,8 +76,6 @@ CONDITION_RULES: tuple[ConditionRule, ...] = (
     ConditionRule("Bluewater CN/Bluewater US", "equals", ("Bluewater CN", "Bluewater US")),
     ConditionRule("DHL CN/DHL UK", "equals", ("DHL CN", "DHL UK")),
     ConditionRule("DHL UK/DHL UX", "equals", ("DHL UK", "DHL UX")),
-    ConditionRule("EI IAH/EI NL", "equals", ("EI IAH", "EI NL")),
-    ConditionRule("EI AE Int/EI IAH", "equals", ("EI IAH", "EI AE Int")),
     ConditionRule("Geodis AE/Geodis NL", "equals", ("Geodis AE", "Geodis NL")),
     ConditionRule("Geodis CN/Geodis NL", "equals", ("Geodis CN", "Geodis NL")),
     ConditionRule("Geodis NL/Geodis SG", "equals", ("Geodis NL", "Geodis SG")),
