@@ -81,14 +81,11 @@ def is_arx_carrier_supplier_name(supplier_name: object) -> bool:
 
 
 def is_dzs_aei_carrier_supplier_name(supplier_name: object) -> bool:
-    """True when supplier resolves to EI AE Int (merged into EI AE Int/EI IAH)."""
+    """True when supplier resolves to EI AE Int."""
     if supplier_name is None:
         return False
     text = str(supplier_name).strip()
     if not text:
         return False
 
-    from build_conditions import normalize_condition_value
-
-    normalized = normalize_condition_value(text)
-    return normalized == "EI AE Int/EI IAH" or text == "EI AE Int"
+    return text == "EI AE Int"
